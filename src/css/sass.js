@@ -29,6 +29,17 @@ export default class SassCompiler extends CompilerBase {
     return mimeTypes;
   }
 
+  buildIncludePaths() {
+    let paths = Object.keys(this.seenFilePaths);
+
+    if (this.compilerOptions.paths) {
+      paths.push(...this.compilerOptions.paths);
+    }
+
+    paths.unshift(".");
+    return paths;
+  }
+
   async shouldCompileFile(fileName, compilerContext) {
     return true;
   }
@@ -43,14 +54,7 @@ export default class SassCompiler extends CompilerBase {
     let thisPath = path.dirname(filePath);
     this.seenFilePaths[thisPath] = true;
 
-    let paths = Object.keys(this.seenFilePaths);
-
-    if (this.compilerOptions.paths) {
-      paths.push(...this.compilerOptions.paths);
-    }
-
-    paths.unshift('.');
-
+    let paths = this.buildIncludePaths();
     sass.importer(this.buildImporterCallback(paths));
 
     let opts = Object.assign({}, this.compilerOptions, {
@@ -96,9 +100,35 @@ export default class SassCompiler extends CompilerBase {
   determineDependentFilesSync(sourceCode, filePath, compilerContext) {
     let dependencyFilenames = path.extname(filePath) === '.sass' ? detectiveSASS(sourceCode) : detectiveSCSS(sourceCode);
     let dependencies = [];
+    let includePaths = this.buildIncludePaths();
 
     for (let dependencyName of dependencyFilenames) {
-      dependencies.push(sassLookup(dependencyName, path.basename(filePath), path.dirname(filePath)));
+      // sass-lookup does not support multiple include paths
+      // check each path manually until the path is found
+      let dependencyPath = sassLookup(dependencyName, filePath, path.dirname(filePath));
+      if (fs.existsSync(dependencyPath)) {
+        dependencies.push(dependencyPath);
+        continue;
+      }
+
+      // sass-lookup does not find partials from the `directory` argument
+      // but faking the path the file exists at will allow partials to work
+      let fileName = path.basename(filePath);
+      let dependencyFound = false;
+      for (let includePath of includePaths) {
+        let fakePath = path.join(includePath, fileName);
+        let dependencyPath = sassLookup(dependencyName, fakePath, path.dirname(filePath));
+
+        if (fs.existsSync(dependencyPath)) {
+          dependencies.push(dependencyPath);
+          dependencyFound = true;
+          break;
+        }
+      }
+
+      if (!dependencyFound) {
+        throw new Error(`Dependency "${dependencyName}" for "${filePath}" could not be found`);
+      }
     }
 
     return dependencies;
@@ -110,13 +140,7 @@ export default class SassCompiler extends CompilerBase {
     let thisPath = path.dirname(filePath);
     this.seenFilePaths[thisPath] = true;
 
-    let paths = Object.keys(this.seenFilePaths);
-
-    if (this.compilerOptions.paths) {
-      paths.push(...this.compilerOptions.paths);
-    }
-
-    paths.unshift('.');
+    let paths = this.buildIncludePaths();
     sass.importer(this.buildImporterCallback(paths));
 
     let opts = Object.assign({}, this.compilerOptions, {
